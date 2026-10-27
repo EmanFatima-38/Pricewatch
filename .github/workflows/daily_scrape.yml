@@ -1,0 +1,36 @@
+name: Daily price check
+
+on:
+  schedule:
+    - cron: "17 3 * * *"   
+  workflow_dispatch:       
+
+permissions:
+  contents: write           
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download the code
+        uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Install packages
+        run: pip install -r requirements.txt
+
+      - name: Run the scraper
+        run: python main.py
+
+      - name: Save the new data
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/prices.db
+          git diff --staged --quiet || git commit -m "Update price data"
+          git push

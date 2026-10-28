@@ -13,7 +13,7 @@ def get_connection(db_path=DB_PATH):
 
 
 def init_db(conn):
-    """Create the tables if they don't exist yet."""
+    """Create the tables if they don't exist yet, and add any new columns."""
     conn.executescript("""
         CREATE TABLE IF NOT EXISTS products (
             id   INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -29,6 +29,12 @@ def init_db(conn):
             scraped_at TEXT NOT NULL
         );
     """)
+
+    # Day 3: older databases don't have original_price yet, so add it
+    columns = [row[1] for row in conn.execute("PRAGMA table_info(prices)")]
+    if "original_price" not in columns:
+        conn.execute("ALTER TABLE prices ADD COLUMN original_price REAL")
+
     conn.commit()
 
 
@@ -49,7 +55,10 @@ def save_result(conn, product):
     in_stock = None if product["in_stock"] is None else int(product["in_stock"])
 
     conn.execute(
-        "INSERT INTO prices (product_id, price, in_stock, scraped_at) VALUES (?, ?, ?, ?)",
-        (product_id, product["price"], in_stock, product["scraped_at"]),
+        """
+        INSERT INTO prices (product_id, price, original_price, in_stock, scraped_at)
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        (product_id, product["price"], product["original_price"], in_stock, product["scraped_at"]),
     )
     conn.commit()

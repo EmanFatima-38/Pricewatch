@@ -1,4 +1,3 @@
-import sqlite3
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -6,6 +5,7 @@ import pandas as pd
 import streamlit as st
 
 from src.analysis import check_discount
+from src.database import get_connection, init_db
 from src.scraper import canonical_url
 
 DB_PATH = Path("data/prices.db")
@@ -16,7 +16,8 @@ st.set_page_config(page_title="PriceWatch", page_icon="📈", layout="wide")
 @st.cache_data(ttl=600)
 def load_data():
     """Read the full price history from the database."""
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_connection(DB_PATH)
+    init_db(conn)   # upgrades an older database (adds new columns) if needed
     df = pd.read_sql_query(
         """
         SELECT products.name, products.url, products.last_seen,

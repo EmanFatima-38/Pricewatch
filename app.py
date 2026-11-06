@@ -19,8 +19,8 @@ def load_data():
     conn = sqlite3.connect(DB_PATH)
     df = pd.read_sql_query(
         """
-        SELECT products.name, products.url, prices.price, prices.original_price,
-               prices.in_stock, prices.scraped_at
+        SELECT products.name, products.url, products.last_seen,
+               prices.price, prices.original_price, prices.in_stock, prices.scraped_at
         FROM prices
         JOIN products ON products.id = prices.product_id
         ORDER BY prices.scraped_at
@@ -30,13 +30,27 @@ def load_data():
     conn.close()
     df["scraped_at"] = pd.to_datetime(df["scraped_at"], utc=True)
     df["date"] = df["scraped_at"].dt.tz_convert("Asia/Karachi").dt.date
+    last_seen = pd.to_datetime(df["last_seen"].fillna(df["scraped_at"].astype(str)), utc=True)
+    df["last_seen_date"] = last_seen.dt.tz_convert("Asia/Karachi").dt.date
     df["store"] = df["url"].map(lambda u: urlparse(u).netloc.removeprefix("www."))
     return df
 
 
 def daily_pairs(group):
-    """One (price, original_price) pair per day, oldest first."""
-    days = group.groupby("date")[["price", "original_price"]].last()
+    """
+    One (price, original_price) pair per day, oldest first.
+
+    Prices are only saved when they change, so days without a new row
+    keep the previous day's price, up to the day the product was last seen.
+    """
+    days = (
+        group.sort_values("scraped_at")
+        .drop_duplicates("date", keep="last")
+        .set_index("date")[["price", "original_price", "in_stock"]]
+    )
+    first_day, last_day = days.index.min(), max(days.index.max(), group["last_seen_date"].max())
+    every_day = pd.date_range(first_day, last_day, freq="D").date
+    days = days.reindex(every_day, method="ffill")   # fills only the missing days
     return days, [
         (row.price, None if pd.isna(row.original_price) else row.original_price)
         for row in days.itertuples()
@@ -53,7 +67,7 @@ def summarize(df):
         rows.append({
             "Product": group["name"].iloc[-1],
             "Store": group["store"].iloc[-1],
-            "Current price": group["price"].iloc[-1],
+            "Current price": days["price"].iloc[-1],
             "Store claims": f"{result['claimed_off']}% off" if "claimed_off" in result else "",
             "Days tracked": len(days),
             "Verdict": result["verdict"],
@@ -123,16 +137,17 @@ chosen_url = st.selectbox(
 
 history = df[df["url"] == chosen_url]
 latest = history.iloc[-1]
+daily, pairs = daily_pairs(history)
+today = daily.iloc[-1]
 
 # ---------- Key numbers ----------
 col1, col2, col3, col4 = st.columns(4)
-col1.metric("Current price", f"{latest['price']:,.0f}")
-col2.metric("Lowest price", f"{history['price'].min():,.0f}")
-col3.metric("Highest price", f"{history['price'].max():,.0f}")
-col4.metric("Average price", f"{history['price'].mean():,.0f}")
+col1.metric("Current price", f"{today['price']:,.0f}")
+col2.metric("Lowest price", f"{daily['price'].min():,.0f}")
+col3.metric("Highest price", f"{daily['price'].max():,.0f}")
+col4.metric("Average price", f"{daily['price'].mean():,.0f}")
 
 # ---------- Fake discount check ----------
-daily, pairs = daily_pairs(history)
 result = check_discount(pairs)
 
 st.subheader("🕵️ Is this discount real?")
@@ -154,13 +169,15 @@ if "claimed_off" in result:
 for reason in result["reasons"]:
     st.write(f"- {reason}")
 
-stock = "✅ In stock" if latest["in_stock"] else "❌ Out of stock"
+stock = "✅ In stock" if today["in_stock"] else "❌ Out of stock"
 days = len(daily)
 st.write(f"{stock} · Tracked for **{days} day(s)** · [Open product page]({latest['url']})")
 
 # ---------- Price history chart (one point per day) ----------
 st.subheader("Price history")
-chart = daily.rename(columns={"price": "Price", "original_price": "Store's 'original' price"})
+chart = daily[["price", "original_price"]].rename(
+    columns={"price": "Price", "original_price": "Store's 'original' price"}
+)
 st.line_chart(chart.dropna(axis=1, how="all"))
 
 if days < 7:
@@ -175,7 +192,7 @@ if only_flagged:
 st.dataframe(table.drop(columns="url"), hide_index=True)
 
 # ---------- Raw data ----------
-with st.expander("See all price checks for this product"):
+with st.expander("See every recorded price change for this product"):
     st.dataframe(
         history[["scraped_at", "price", "original_price", "in_stock"]].sort_values(
             "scraped_at", ascending=False

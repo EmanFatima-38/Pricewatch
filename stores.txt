@@ -1,2 +1,14 @@
 # One Shopify store per line. Every product in the store is tracked daily.
+# Add new stores only after the "Check candidate stores" workflow reports WORKS.
 https://zerolifestyle.co
+https://outfitters.com.pk
+https://www.beechtree.pk
+https://www.limelight.pk
+https://www.alkaramstudio.com
+https://www.mariab.pk
+https://bonanzasatrangi.com
+https://www.asimjofa.com
+https://www.bagallery.com
+https://www.mistore.pk
+https://savaniofficial.com
+https://redsquareshop.com

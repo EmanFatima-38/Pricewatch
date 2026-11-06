@@ -28,12 +28,12 @@ def main():
     for store in stores:
         try:
             products = scrape_shopify_store(store)
-            for product in products:
-                save_result(conn, product, commit=False)
+            changes = sum(save_result(conn, product, commit=False) for product in products)
             conn.commit()
             saved += len(products)
             on_sale = sum(1 for p in products if p["original_price"])
-            print(f"Saved: {store}: {len(products)} products ({on_sale} on sale)")
+            print(f"Saved: {store}: {len(products)} products checked, "
+                  f"{on_sale} on sale, {changes} new or changed prices")
         except Exception as error:
             print(f"Failed: {store}\n  Reason: {error}")
         time.sleep(2)  # be polite between stores
@@ -50,7 +50,7 @@ def main():
         time.sleep(1)  # be polite between requests
 
     conn.close()
-    print(f"\nDone. Saved {saved} price records.")
+    print(f"\nDone. Checked {saved} products.")
 
     if saved == 0:
         sys.exit(1)  # makes the GitHub Actions run show red, so failures get noticed

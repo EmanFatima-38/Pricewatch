@@ -35,15 +35,34 @@ def init_db(conn):
     if "original_price" not in columns:
         conn.execute("ALTER TABLE prices ADD COLUMN original_price REAL")
 
+    # Day 7: remember when each product was last checked
+    product_columns = [row[1] for row in conn.execute("PRAGMA table_info(products)")]
+    if "last_seen" not in product_columns:
+        conn.execute("ALTER TABLE products ADD COLUMN last_seen TEXT")
+        conn.execute("""
+            UPDATE products SET last_seen =
+                (SELECT MAX(scraped_at) FROM prices WHERE prices.product_id = products.id)
+        """)
+
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_prices_product ON prices(product_id, scraped_at)")
     conn.commit()
+
+
 def save_result(conn, product, commit=True):
-    """Save one scraped product and its current price."""
+    """
+    Save one scraped product.
+
+    A new price row is added only when the price, original price or stock status
+    changed since the last check. Otherwise we just record that the product was
+    seen again. This keeps the database small even with thousands of products.
+    Returns True if a new price row was added.
+    """
     conn.execute(
         """
-        INSERT INTO products (url, name) VALUES (?, ?)
-        ON CONFLICT(url) DO UPDATE SET name = excluded.name
+        INSERT INTO products (url, name, last_seen) VALUES (?, ?, ?)
+        ON CONFLICT(url) DO UPDATE SET name = excluded.name, last_seen = excluded.last_seen
         """,
-        (product["url"], product["name"]),
+        (product["url"], product["name"], product["scraped_at"]),
     )
 
     product_id = conn.execute(
@@ -51,13 +70,25 @@ def save_result(conn, product, commit=True):
     ).fetchone()[0]
 
     in_stock = None if product["in_stock"] is None else int(product["in_stock"])
+    new_values = (product["price"], product["original_price"], in_stock)
 
-    conn.execute(
+    last = conn.execute(
         """
-        INSERT INTO prices (product_id, price, original_price, in_stock, scraped_at)
-        VALUES (?, ?, ?, ?, ?)
+        SELECT price, original_price, in_stock FROM prices
+        WHERE product_id = ? ORDER BY scraped_at DESC, id DESC LIMIT 1
         """,
-        (product_id, product["price"], product["original_price"], in_stock, product["scraped_at"]),
-    )
+        (product_id,),
+    ).fetchone()
+
+    changed = last != new_values
+    if changed:
+        conn.execute(
+            """
+            INSERT INTO prices (product_id, price, original_price, in_stock, scraped_at)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (product_id, *new_values, product["scraped_at"]),
+        )
     if commit:
         conn.commit()
+    return changed

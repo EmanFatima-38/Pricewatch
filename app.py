@@ -1,3 +1,4 @@
+from datetime import timedelta
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -9,6 +10,7 @@ from src.database import get_connection, init_db
 from src.scraper import canonical_url
 
 DB_PATH = Path("data/prices.db")
+ONE_DAY = timedelta(days=1)
 
 st.set_page_config(page_title="PriceWatch", page_icon="📈", layout="wide")
 
@@ -58,19 +60,42 @@ def daily_pairs(group):
     ]
 
 
+def fill_days(records, last_seen_day):
+    """
+    Fast version of daily_pairs for the overview table, in plain Python.
+    `records` is a list of (date, price, original_price), oldest first.
+    """
+    by_day = {}
+    for day, price, original in records:
+        by_day[day] = (price, None if pd.isna(original) else original)
+    day, last_day = records[0][0], max(records[-1][0], last_seen_day)
+    pairs, current = [], None
+    while day <= last_day:
+        current = by_day.get(day, current)
+        pairs.append(current)
+        day += ONE_DAY
+    return pairs
+
+
 @st.cache_data(ttl=600)
 def summarize(df):
     """The verdict for every product, for the overview table."""
+    grouped = {}
+    for row in df.itertuples(index=False):   # df is already sorted by time
+        grouped.setdefault(row.url, []).append(row)
+
     rows = []
-    for url, group in df.groupby("url"):
-        days, pairs = daily_pairs(group)
+    for url, records in grouped.items():
+        last = records[-1]
+        pairs = fill_days([(r.date, r.price, r.original_price) for r in records],
+                          last.last_seen_date)
         result = check_discount(pairs)
         rows.append({
-            "Product": group["name"].iloc[-1],
-            "Store": group["store"].iloc[-1],
-            "Current price": days["price"].iloc[-1],
+            "Product": last.name,
+            "Store": last.store,
+            "Current price": pairs[-1][0],
             "Store claims": f"{result['claimed_off']}% off" if "claimed_off" in result else "",
-            "Days tracked": len(days),
+            "Days tracked": len(pairs),
             "Verdict": result["verdict"],
             "url": url,
         })
@@ -123,7 +148,10 @@ if query.lower().startswith("http"):
                     f"Supported stores: {', '.join(stores)}.")
         st.stop()
 elif query:
-    matches = matches[matches["Product"].str.contains(query, case=False, regex=False)]
+    matches = matches[
+        matches["Product"].str.contains(query, case=False, regex=False)
+        | matches["Store"].str.contains(query, case=False, regex=False)
+    ]
 
 if matches.empty:
     st.info("No products match your search.")

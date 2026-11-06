@@ -1,34 +1,42 @@
+"""Check which stores in candidate_stores.txt let PriceWatch read their product catalog."""
 import time
 
 import requests
 
-HEADERS = {"User-Agent": "PriceWatchBot/1.0 (learning project)"}
+from main import load_lines
+from src.scraper import HEADERS
 
-STORES = [
-    "https://www.beechtree.pk",
-    "https://www.mistore.pk",
-    "https://bonanzasatrangi.com",
-    "https://www.asimjofa.com",
-    "https://www.bagallery.com",
-    "https://zerolifestyle.co",
-    "https://pk.sapphireonline.pk",
-]
+working, blocked, unsupported = [], [], []
 
-for store in STORES:
+for store in load_lines("candidate_stores.txt"):
+    store = store.rstrip("/")
     try:
-        response = requests.get(
-            f"{store}/products.json?limit=1", headers=HEADERS, timeout=10
-        )
-        if response.status_code != 200:
-            print(f"❌ {store} -> blocked or not available ({response.status_code})")
+        response = requests.get(f"{store}/products.json", params={"limit": 1},
+                                headers=HEADERS, timeout=15)
+        if response.status_code == 429:
+            blocked.append(store)
+            print(f"BLOCKED      {store} (429: asks bots to slow down)")
+        elif response.status_code != 200:
+            unsupported.append(store)
+            print(f"UNSUPPORTED  {store} (HTTP {response.status_code})")
         else:
-            product = response.json()["products"][0]
-            variant = product["variants"][0]
-            print(f"✅ {store} -> works!")
-            print(f"   Example: {product['title']} | price: {variant['price']} | "
-                  f"original: {variant.get('compare_at_price')}")
-            print(f"   Link: {store}/products/{product['handle']}")
+            products = response.json().get("products", [])
+            if not products:
+                unsupported.append(store)
+                print(f"UNSUPPORTED  {store} (no products returned)")
+            else:
+                variant = products[0]["variants"][0]
+                working.append(store)
+                print(f"WORKS        {store}  e.g. {products[0]['title']} | Rs. {variant['price']}")
+    except ValueError:
+        unsupported.append(store)
+        print(f"UNSUPPORTED  {store} (not a Shopify catalog)")
     except Exception as error:
-        print(f"❌ {store} -> error: {error}")
+        unsupported.append(store)
+        print(f"ERROR        {store} ({error})")
+    time.sleep(3)  # one request per store, with a pause
 
-    time.sleep(2)  # be polite between stores
+print(f"\n{len(working)} working, {len(blocked)} blocked, {len(unsupported)} unsupported.")
+print("\nCopy these lines into stores.txt:")
+for store in working:
+    print(store)

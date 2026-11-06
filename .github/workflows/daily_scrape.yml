@@ -2,11 +2,11 @@ name: Daily price check
 
 on:
   schedule:
-    - cron: "17 3 * * *"   
-  workflow_dispatch:       
+    - cron: "17 3 * * *"   # every day at 03:17 UTC (8:17 AM Pakistan time)
+  workflow_dispatch:        # adds a "Run workflow" button for manual runs
 
 permissions:
-  contents: write           
+  contents: write           # allows the workflow to save the database back to the repo
 
 jobs:
   scrape:
@@ -23,6 +23,9 @@ jobs:
 
       - name: Install packages
         run: pip install -r requirements.txt
+
+      - name: Run tests
+        run: python -m unittest discover -s tests -v
 
       - name: Run the scraper
         run: python main.py

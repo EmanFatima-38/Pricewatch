@@ -36,9 +36,7 @@ def init_db(conn):
         conn.execute("ALTER TABLE prices ADD COLUMN original_price REAL")
 
     conn.commit()
-
-
-def save_result(conn, product):
+def save_result(conn, product, commit=True):
     """Save one scraped product and its current price."""
     conn.execute(
         """
@@ -61,4 +59,5 @@ def save_result(conn, product):
         """,
         (product_id, product["price"], product["original_price"], in_stock, product["scraped_at"]),
     )
-    conn.commit()
+    if commit:
+        conn.commit()

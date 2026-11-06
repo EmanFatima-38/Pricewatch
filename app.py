@@ -1,10 +1,12 @@
 import sqlite3
 from pathlib import Path
+from urllib.parse import urlparse
 
 import pandas as pd
 import streamlit as st
 
 from src.analysis import check_discount
+from src.scraper import canonical_url
 
 DB_PATH = Path("data/prices.db")
 
@@ -28,7 +30,36 @@ def load_data():
     conn.close()
     df["scraped_at"] = pd.to_datetime(df["scraped_at"], utc=True)
     df["date"] = df["scraped_at"].dt.tz_convert("Asia/Karachi").dt.date
+    df["store"] = df["url"].map(lambda u: urlparse(u).netloc.removeprefix("www."))
     return df
+
+
+def daily_pairs(group):
+    """One (price, original_price) pair per day, oldest first."""
+    days = group.groupby("date")[["price", "original_price"]].last()
+    return days, [
+        (row.price, None if pd.isna(row.original_price) else row.original_price)
+        for row in days.itertuples()
+    ]
+
+
+@st.cache_data(ttl=600)
+def summarize(df):
+    """The verdict for every product, for the overview table."""
+    rows = []
+    for url, group in df.groupby("url"):
+        days, pairs = daily_pairs(group)
+        result = check_discount(pairs)
+        rows.append({
+            "Product": group["name"].iloc[-1],
+            "Store": group["store"].iloc[-1],
+            "Current price": group["price"].iloc[-1],
+            "Store claims": f"{result['claimed_off']}% off" if "claimed_off" in result else "",
+            "Days tracked": len(days),
+            "Verdict": result["verdict"],
+            "url": url,
+        })
+    return pd.DataFrame(rows)
 
 
 st.title("📈 PriceWatch")
@@ -39,10 +70,54 @@ if not DB_PATH.exists():
     st.stop()
 
 df = load_data()
+summary = summarize(df)
+stores = sorted(df["store"].unique())
 
-# ---------- Choose a product ----------
-product_name = st.selectbox("Choose a product", sorted(df["name"].unique()))
-history = df[df["name"] == product_name]
+st.caption(
+    "Supported stores: " + ", ".join(
+        f"{s} ({(summary['Store'] == s).sum()} products)" for s in stores
+    )
+)
+
+# ---------- Find a product ----------
+st.subheader("🔍 Find a product")
+col_search, col_store = st.columns([3, 1])
+query = col_search.text_input("Search by name, or paste a product link").strip()
+store_choice = col_store.selectbox("Store", ["All stores"] + stores)
+
+matches = summary if store_choice == "All stores" else summary[summary["Store"] == store_choice]
+
+if query.lower().startswith("http"):
+    try:
+        wanted = canonical_url(query)
+    except ValueError:
+        st.warning("That doesn't look like a product link. It should contain /products/.")
+        st.stop()
+    matches = matches[matches["url"] == wanted]
+    if matches.empty:
+        store = urlparse(wanted).netloc
+        if store in stores:
+            st.info("This product isn't in our data yet. New products are picked up "
+                    "at the next daily check, so try again tomorrow.")
+        else:
+            st.info(f"**{store}** isn't a supported store yet. "
+                    f"Supported stores: {', '.join(stores)}.")
+        st.stop()
+elif query:
+    matches = matches[matches["Product"].str.contains(query, case=False, regex=False)]
+
+if matches.empty:
+    st.info("No products match your search.")
+    st.stop()
+
+labels = dict(zip(matches["url"], matches["Product"] + "  ·  " + matches["Store"]))
+chosen_url = st.selectbox(
+    f"{len(matches)} matching product(s)",
+    sorted(labels, key=labels.get),
+    format_func=labels.get,
+)
+
+history = df[df["url"] == chosen_url]
 latest = history.iloc[-1]
 
 # ---------- Key numbers ----------
@@ -53,11 +128,7 @@ col3.metric("Highest price", f"{history['price'].max():,.0f}")
 col4.metric("Average price", f"{history['price'].mean():,.0f}")
 
 # ---------- Fake discount check ----------
-daily = history.groupby("date")[["price", "original_price"]].last()
-pairs = [
-    (row.price, None if pd.isna(row.original_price) else row.original_price)
-    for row in daily.itertuples()
-]
+daily, pairs = daily_pairs(history)
 result = check_discount(pairs)
 
 st.subheader("🕵️ Is this discount real?")
@@ -80,36 +151,27 @@ for reason in result["reasons"]:
     st.write(f"- {reason}")
 
 stock = "✅ In stock" if latest["in_stock"] else "❌ Out of stock"
-days = history["date"].nunique()
+days = len(daily)
 st.write(f"{stock} · Tracked for **{days} day(s)** · [Open product page]({latest['url']})")
 
 # ---------- Price history chart (one point per day) ----------
 st.subheader("Price history")
-daily = daily.rename(columns={"price": "Price", "original_price": "Store's 'original' price"})
-st.line_chart(daily.dropna(axis=1, how="all"))
+chart = daily.rename(columns={"price": "Price", "original_price": "Store's 'original' price"})
+st.line_chart(chart.dropna(axis=1, how="all"))
 
 if days < 7:
     st.caption("The chart becomes more useful as more days of data are collected.")
 
 # ---------- All products at a glance ----------
 st.subheader("All products")
-summary = []
-for name, group in df.groupby("name"):
-    days_data = group.groupby("date")[["price", "original_price"]].last()
-    check = check_discount([
-        (r.price, None if pd.isna(r.original_price) else r.original_price)
-        for r in days_data.itertuples()
-    ])
-    summary.append({
-        "Product": name,
-        "Current price": group["price"].iloc[-1],
-        "Days tracked": len(days_data),
-        "Verdict": check["verdict"],
-    })
-st.dataframe(pd.DataFrame(summary), hide_index=True)
+only_flagged = st.checkbox("Show only suspicious discounts")
+table = summary if store_choice == "All stores" else summary[summary["Store"] == store_choice]
+if only_flagged:
+    table = table[table["Verdict"] == "Suspicious discount"]
+st.dataframe(table.drop(columns="url"), hide_index=True)
 
 # ---------- Raw data ----------
-with st.expander("See all price checks"):
+with st.expander("See all price checks for this product"):
     st.dataframe(
         history[["scraped_at", "price", "original_price", "in_stock"]].sort_values(
             "scraped_at", ascending=False

@@ -4,13 +4,18 @@ import time
 import requests
 
 from main import load_lines
-from src.scraper import HEADERS
+from src.scraper import HEADERS, allowed_by_robots
 
-working, blocked, unsupported = [], [], []
+working, blocked, unsupported, not_allowed = [], [], [], []
 
 for store in load_lines("candidate_stores.txt"):
     store = store.rstrip("/")
     try:
+        if not allowed_by_robots(f"{store}/products.json"):
+            not_allowed.append(store)
+            print(f"NOT ALLOWED  {store} (robots.txt asks bots not to read the catalog)")
+            time.sleep(3)
+            continue
         response = requests.get(f"{store}/products.json", params={"limit": 1},
                                 headers=HEADERS, timeout=15)
         if response.status_code == 429:
@@ -36,7 +41,8 @@ for store in load_lines("candidate_stores.txt"):
         print(f"ERROR        {store} ({error})")
     time.sleep(3)  # one request per store, with a pause
 
-print(f"\n{len(working)} working, {len(blocked)} blocked, {len(unsupported)} unsupported.")
+print(f"\n{len(working)} working, {len(not_allowed)} not allowed, "
+      f"{len(blocked)} blocked, {len(unsupported)} unsupported.")
 print("\nCopy these lines into stores.txt:")
 for store in working:
     print(store)

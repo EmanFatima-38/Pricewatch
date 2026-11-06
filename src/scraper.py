@@ -2,17 +2,40 @@ import re
 import time
 from datetime import datetime, timezone
 from urllib.parse import urlparse
+from urllib.robotparser import RobotFileParser
 
 import requests
 from bs4 import BeautifulSoup
 
-HEADERS = {"User-Agent": "PriceWatchBot/1.0 (learning project)"}
-PAGE_SIZE = 250        
-MAX_PAGES = 20        
+BOT_NAME = "PriceWatchBot"
+HEADERS = {"User-Agent": f"{BOT_NAME}/1.0 (learning project)"}
+PAGE_SIZE = 250        # the most products Shopify returns per page
+MAX_PAGES = 20         # safety limit: at most 5,000 products per store
 
 
 class StoreBlocked(Exception):
     """The store asked us to slow down (HTTP 429), so we stop."""
+
+
+class NotAllowed(Exception):
+    """The store's robots.txt says bots may not read this page, so we skip it."""
+
+
+def allowed_by_robots(url):
+    """Check the site's robots.txt before reading a page, like a polite bot should."""
+    parts = urlparse(url)
+    robots_url = f"{parts.scheme}://{parts.netloc}/robots.txt"
+    try:
+        response = requests.get(robots_url, headers=HEADERS, timeout=10)
+    except requests.RequestException:
+        return False                   # can't read the rules, so don't assume permission
+    if response.status_code in (401, 403) or response.status_code >= 500:
+        return False                   # the site is refusing or broken: stay away
+    if response.status_code >= 400:
+        return True                    # no robots.txt means no rules
+    rules = RobotFileParser()
+    rules.parse(response.text.splitlines())
+    return rules.can_fetch(BOT_NAME, url)
 
 
 def now_utc():
@@ -27,6 +50,7 @@ def parse_price(text):
     return float(match.group().replace(",", ""))
 
 
+# ---------- Store 1: books.toscrape.com (practice site, reads HTML) ----------
 
 def scrape_books_toscrape(url):
     response = requests.get(url, headers=HEADERS, timeout=10)
@@ -51,6 +75,7 @@ def scrape_books_toscrape(url):
     }
 
 
+# ---------- Store 2: Shopify stores ----------
 
 def product_handle(url):
     """Get the product's short name from a link like .../products/luna-smart-watch."""
@@ -75,6 +100,8 @@ def shopify_data_url(url):
 
 def scrape_shopify(url):
     """Check one product (used for single links in products.txt)."""
+    if not allowed_by_robots(shopify_data_url(url)):
+        raise NotAllowed(f"robots.txt does not allow bots to read {url}")
     response = requests.get(shopify_data_url(url), headers=HEADERS, timeout=10)
     response.raise_for_status()
 
@@ -131,6 +158,8 @@ def product_from_catalog(store, item, scraped_at):
 def scrape_shopify_store(store_url):
     """Check every product in a Shopify store, a page of up to 250 at a time."""
     store = store_url.rstrip("/")
+    if not allowed_by_robots(f"{store}/products.json"):
+        raise NotAllowed(f"{store}/robots.txt does not allow bots to read the catalog")
     scraped_at = now_utc()
     products = []
 
@@ -161,6 +190,7 @@ def scrape_shopify_store(store_url):
     return products
 
 
+# ---------- Pick the right scraper for each single link ----------
 
 def scrape_product(url):
     """Download a product page and return its details as a dictionary."""

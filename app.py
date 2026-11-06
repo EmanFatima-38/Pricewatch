@@ -64,6 +64,10 @@ def summarize(df):
 
 st.title("📈 PriceWatch")
 st.caption("Tracks product prices every day to show whether a discount is real.")
+st.caption(
+    "ℹ️ Verdicts are automatic estimates based only on prices PriceWatch has recorded. "
+    "They can be incomplete or wrong, and are not a statement about any store's intentions."
+)
 
 if not DB_PATH.exists():
     st.error("No data yet. Run `python main.py` first.")

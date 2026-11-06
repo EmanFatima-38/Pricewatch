@@ -12,6 +12,13 @@ def fake_response(status=200, json_data=None):
     return response
 
 
+def text_response(status=200, text=""):
+    response = mock.Mock()
+    response.status_code = status
+    response.text = text
+    return response
+
+
 def catalog_item(handle, price, compare_at=None, available=True):
     return {
         "title": handle.replace("-", " ").title(),
@@ -41,7 +48,38 @@ class UrlTests(unittest.TestCase):
         self.assertIsNone(scraper.parse_price("no price"))
 
 
+class RobotsTests(unittest.TestCase):
+    def test_allows_when_rules_allow(self):
+        rules = "User-agent: *\nDisallow: /checkout\n"
+        with mock.patch.object(scraper.requests, "get", return_value=text_response(text=rules)):
+            self.assertTrue(scraper.allowed_by_robots("https://shop.pk/products.json"))
+
+    def test_blocks_when_rules_disallow(self):
+        rules = "User-agent: *\nDisallow: /products\n"
+        with mock.patch.object(scraper.requests, "get", return_value=text_response(text=rules)):
+            self.assertFalse(scraper.allowed_by_robots("https://shop.pk/products.json"))
+
+    def test_blocks_when_our_bot_is_named(self):
+        rules = "User-agent: PriceWatchBot\nDisallow: /\n"
+        with mock.patch.object(scraper.requests, "get", return_value=text_response(text=rules)):
+            self.assertFalse(scraper.allowed_by_robots("https://shop.pk/products.json"))
+
+    def test_no_robots_file_means_no_rules(self):
+        with mock.patch.object(scraper.requests, "get", return_value=text_response(status=404)):
+            self.assertTrue(scraper.allowed_by_robots("https://shop.pk/products.json"))
+
+    def test_store_is_skipped_when_disallowed(self):
+        with mock.patch.object(scraper, "allowed_by_robots", return_value=False):
+            with self.assertRaises(scraper.NotAllowed):
+                scraper.scrape_shopify_store("https://shop.pk")
+
+
 class StoreCatalogTests(unittest.TestCase):
+    def setUp(self):
+        patcher = mock.patch.object(scraper, "allowed_by_robots", return_value=True)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def test_reads_prices_and_sale(self):
         page = {"products": [
             catalog_item("gravity-earbuds", "2999.00", "4999.00"),
